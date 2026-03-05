@@ -210,5 +210,9 @@ with tab2:
 
             clean_name = "".join(x for x in target_program if x.isalnum() or x in " -_")
             st.download_button("📥 Download", output.getvalue(), f"Fluxx_Report_FY{target_fy}_{clean_name}.xlsx")
-    except:
+    except FileNotFoundError:
         st.info("No local data found. Please complete Step 1 to sync data.")
+    except Exception as e:
+        # This will show you the EXACT error (e.g., a Key Error or a Math Error)
+        st.error(f"An error occurred during report generation: {e}")
+        st.write("Check if the Program and Fiscal Year you selected actually have data in Fluxx.")
