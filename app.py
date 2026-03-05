@@ -23,7 +23,7 @@ with st.sidebar:
     client_secret = st.text_input("Client Secret", type="password")
     
     st.divider()
-    st.caption("Standardized Reporting Logic v3.0")
+    st.caption("Standardized Reporting Logic v3.1")
 
 # --- CORE UTILITY FUNCTIONS ---
 
@@ -105,7 +105,7 @@ with tab1:
             headers = get_auth_header()
             if headers:
                 with st.status("Fetching live data...", expanded=True) as status:
-                    # Automatically pull all necessary tables
+                    # Sync logic
                     get_all_records('program', ['id', 'name'], headers).to_csv('raw_program.csv', index=False)
                     get_all_records('sub_program', ['id', 'name'], headers).to_csv('raw_sub_program.csv', index=False)
                     get_all_records('funding_source', ['id', 'name', 'start_at', 'end_at'], headers).to_csv('raw_funding_source.csv', index=False)
@@ -124,7 +124,6 @@ with tab1:
 with tab2:
     st.header("Report Parameters")
     
-    # Dynamically build the program list from synced data
     program_list = ["Run Step 1 First"]
     try:
         temp_prog = pd.read_csv('raw_program.csv')
@@ -139,7 +138,7 @@ with tab2:
 
     if st.button("Generate Report"):
         try:
-            # 1. LOAD CACHED DATA
+            # 1. LOAD DATA
             df_prog = clean_data_types(pd.read_csv('raw_program.csv'))
             df_sub = clean_data_types(pd.read_csv('raw_sub_program.csv'))
             df_fund = clean_data_types(pd.read_csv('raw_funding_source.csv'))
@@ -149,7 +148,7 @@ with tab2:
             df_pay_head = clean_data_types(pd.read_csv('raw_payments_header.csv'))
             df_pay_split = clean_data_types(pd.read_csv('raw_payment_splits.csv'))
 
-            # Prep Organization Names
+            # Prep Names
             df_gr['Grantee'] = df_gr['program_organization_id'].apply(extract_org_name)
             df_gr = clean_data_types(df_gr)
 
@@ -159,7 +158,7 @@ with tab2:
             fy_end = pd.to_datetime(f"{target_fy}-06-30")
             months = pd.period_range(start=fy_start, end=fy_end, freq='M')
 
-            # 2. DATA MERGING
+            # 2. DATA MERGING (Fixed the ID overlap)
             df_prog = df_prog.rename(columns={'id': 'p_id', 'name': 'Program'})
             df_sub = df_sub.rename(columns={'id': 'sp_id', 'name': 'Sub Focus Area'})
             df_fund = df_fund.rename(columns={'id': 'fs_id', 'name': 'Funding Source'})
@@ -172,17 +171,19 @@ with tab2:
             budget_col = f'Awards Budget Total FY{fy_short}'
             df_fsa = df_fsa.rename(columns={'amount': budget_col, 'id': 'FSA_ID'})
             
+            # Explicitly naming the RFS ID to avoid 'id_x' confusion
+            df_split_rfs = df_split_rfs.rename(columns={'id': 'RFS_ID_Key'})
+            
             df_gr = df_gr.rename(columns={'id': 'Request_ID', 'base_request_id': 'Request ID'})
             master = df_split_rfs.merge(df_gr, left_on='request_id', right_on='Request_ID', how='left')
             master = master.merge(df_fsa, left_on='funding_source_allocation_id', right_on='FSA_ID', how='right')
             master = master.rename(columns={'Grantee': 'Organization Name', 'project_title': 'Project Title'})
 
-            # 3. CALCULATE MONTHLY & QUARTERLY TOTALS
+            # 3. CALCULATE TOTALS
             master['grant_agreement_at'] = pd.to_datetime(master['grant_agreement_at'], errors='coerce').dt.tz_localize(None)
             df_pay_head['due_at'] = pd.to_datetime(df_pay_head['due_at'], errors='coerce').dt.tz_localize(None)
             df_pay_full = df_pay_split.merge(df_pay_head, left_on='request_transaction_id', right_on='id', how='left')
 
-            # Initialize Quarterly Columns
             for q in [1, 2, 3, 4]:
                 master[f'Q{q} FY{fy_short} Awards'] = 0.0
                 master[f'Q{q} FY{fy_short} Payments'] = 0.0
@@ -191,23 +192,19 @@ with tab2:
             for period in months:
                 lbl = period.strftime('%b-%y')
                 m_num = period.month
-                # Assign Quarter (FY starts July = Q1)
                 q = 1 if m_num in [7,8,9] else 2 if m_num in [10,11,12] else 3 if m_num in [1,2,3] else 4
                 
-                # Monthly Logic
                 c_award, c_pay = f'{lbl} Awards', f'{lbl} Payments'
                 master[c_award] = np.where(master['grant_agreement_at'].dt.to_period('M') == period, master['funding_amount'], 0.0)
                 
+                # Using the explicit 'RFS_ID_Key' here instead of 'id_x'
                 pays = df_pay_full[df_pay_full['due_at'].dt.to_period('M') == period].groupby('request_funding_source_id')['amount'].sum()
-                master[c_pay] = master['id_x'].map(pays).fillna(0.0)
+                master[c_pay] = master['RFS_ID_Key'].map(pays).fillna(0.0)
                 
                 all_time_cols.extend([c_award, c_pay])
-                
-                # Add to Quarter Total
                 master[f'Q{q} FY{fy_short} Awards'] += master[c_award]
                 master[f'Q{q} FY{fy_short} Payments'] += master[c_pay]
 
-                # Insert Quarter Columns after the 3rd month of each quarter
                 if m_num in [9, 12, 3, 6]:
                     all_time_cols.extend([f'Q{q} FY{fy_short} Awards', f'Q{q} FY{fy_short} Payments'])
 
@@ -215,8 +212,6 @@ with tab2:
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 report_df = master[master['Program'] == target_program] if target_program in master['Program'].values else master
-                
-                # Reorder columns to put time series at the end
                 info_headers = ['Program', 'Sub Focus Area', 'Funding Source', budget_col, 'Organization Name', 'Request ID', 'Project Title']
                 final_df = report_df[info_headers + all_time_cols]
                 
@@ -224,29 +219,20 @@ with tab2:
                 
                 workbook = writer.book
                 worksheet = writer.sheets["Program Report"]
-                
-                # Formatting
                 money_fmt = workbook.add_format({'num_format': '$#,##0.00'})
                 header_fmt = workbook.add_format({'bold': True, 'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1})
                 q_fmt = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'num_format': '$#,##0.00', 'border': 1})
 
                 for col_num, value in enumerate(final_df.columns.values):
-                    # Style Headers
                     worksheet.write(0, col_num, value, header_fmt)
-                    # Apply money formatting to all numeric columns
                     if any(x in value for x in ['Awards', 'Payments', 'Budget']):
                         fmt = q_fmt if 'Q' in value else money_fmt
                         worksheet.set_column(col_num, col_num, 18, fmt)
                     else:
-                        worksheet.set_column(col_num, col_num, 20)
+                        worksheet.set_column(col_num, col_num, 25)
 
             st.success("Report Generated!")
-            st.download_button(
-                label="📥 Download Excel Report",
-                data=output.getvalue(),
-                file_name=f"Fluxx_Report_{target_program}_FY{target_fy}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            st.download_button(label="📥 Download Excel Report", data=output.getvalue(), file_name=f"Fluxx_Report_{target_program}_FY{target_fy}.xlsx")
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error during processing: {e}")
