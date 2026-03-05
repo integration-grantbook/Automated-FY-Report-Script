@@ -18,12 +18,13 @@ st.markdown("Automated Data Sync and Fiscal Year Reporting")
 with st.sidebar:
     st.header("1. API Authentication")
     st.info("Enter your Fluxx API credentials to allow the app to securely fetch your data.")
-    client_site = st.text_input("Client Site URL", value='https://masscec.fluxx.io')
+    # Set value to empty string per your previous request
+    client_site = st.text_input("Client Site URL", value='')
     client_id = st.text_input("Client ID", type="password")
     client_secret = st.text_input("Client Secret", type="password")
     
     st.divider()
-    st.caption("Standardized Reporting Engine v7.0")
+    st.caption("Standardized Reporting Engine v12.0")
 
 # --- UTILITY FUNCTIONS ---
 
@@ -92,7 +93,7 @@ tab1, tab2 = st.tabs(["🚀 Step 1: Sync Data", "📄 Step 2: Generate Report"])
 with tab1:
     st.header("Data Synchronization")
     if st.button("Sync All Tables"):
-        if not client_id or not client_secret:
+        if not client_site or not client_id or not client_secret:
             st.error("Please provide API credentials in the sidebar.")
         else:
             headers = get_auth_header()
@@ -157,6 +158,7 @@ with tab2:
             df_gr = df_gr.rename(columns={'id': 'Request_ID', 'base_request_id': 'Request ID'})
             master = df_split_rfs.merge(df_gr, left_on='request_id', right_on='Request_ID', how='left')
             master = master.merge(df_fsa, left_on='funding_source_allocation_id', right_on='FSA_ID', how='right')
+            # Keeping 'Grantee' and 'project_title' exactly as they appear in the provided working logic
             master = master.rename(columns={'Grantee': 'Organization Name', 'project_title': 'Project Title'})
 
             master['grant_agreement_at'] = pd.to_datetime(master['grant_agreement_at'], errors='coerce').dt.tz_localize(None)
@@ -191,6 +193,10 @@ with tab2:
             output = io.BytesIO()
             master = master[master['Program'] == target_program]
             
+            # CRITICAL FIX: Ensure no NaN values crash the XlsxWriter
+            master[all_time_cols] = master[all_time_cols].fillna(0.0)
+            master[budget_col] = master[budget_col].fillna(0.0)
+
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
                 # FORMATS
@@ -200,7 +206,7 @@ with tab2:
                 subtotal_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'num_format': '$#,##0.00', 'border': 1})
                 subtotal_txt_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
                 sp_fmt = workbook.add_format({'bold': True, 'bg_color': '#ACB9CA', 'num_format': '$#,##0.00', 'border': 1})
-                divider_fmt = workbook.add_format({'bg_color': '#808080'}) # Gray Divider
+                divider_fmt = workbook.add_format({'bg_color': '#808080', 'border': 1}) # Gray Divider
 
                 sheet_name = str(target_program)[:31].replace('/', '-')
                 final_rows = []
@@ -234,7 +240,7 @@ with tab2:
                     final_rows.append(sp_sum_row)
                     final_rows.append({c: "" for c in all_cols})
 
-                report_df = pd.DataFrame(final_rows)
+                report_df = pd.DataFrame(final_rows).fillna("")
                 report_df[all_cols].to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
                 worksheet = writer.sheets[sheet_name]
 
@@ -244,7 +250,7 @@ with tab2:
                     if col_name in ['DIV1', 'DIV2']:
                         worksheet.set_column(col_num, col_num, 2, divider_fmt)
                     else:
-                        # Logic to calculate column width based on max content length
+                        # Autofit Logic
                         max_len = max(report_df[col_name].astype(str).map(len).max(), len(col_name)) + 2
                         worksheet.set_column(col_num, col_num, min(max_len, 50))
 
@@ -252,25 +258,28 @@ with tab2:
                 for r_idx, r_data in enumerate(final_rows):
                     e_row, r_type = r_idx + 1, r_data.get('Row_Type')
                     
-                    # Apply money format to standard data rows
                     if r_type == 'Data':
-                        worksheet.write(e_row, 3, r_data.get(budget_col), money_fmt) # Budget
+                        # Currency for standard data rows
+                        worksheet.write(e_row, 3, r_data.get(budget_col, 0), money_fmt)
                         for i, c_name in enumerate(all_time_cols):
                             col_idx = len(info_cols) + 1 + len(grant_cols) + 1 + i
                             fmt = total_col_fmt if "Total" in c_name else money_fmt
-                            worksheet.write(e_row, col_idx, r_data.get(c_name), fmt)
+                            worksheet.write(e_row, col_idx, r_data.get(c_name, 0), fmt)
 
                     elif r_type == 'FS_Subtotal':
                         worksheet.set_row(e_row, None, subtotal_txt_fmt)
-                        worksheet.write(e_row, 3, r_data.get(budget_col), subtotal_num_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col, 0), subtotal_num_fmt)
                         for i, c_name in enumerate(all_time_cols):
-                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), subtotal_num_fmt)
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name, 0), subtotal_num_fmt)
                             
                     elif r_type == 'SP_Total':
                         worksheet.set_row(e_row, None, sp_fmt)
-                        worksheet.write(e_row, 3, r_data.get(budget_col), sp_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col, 0), sp_fmt)
                         for i, c_name in enumerate(all_time_cols):
-                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), sp_fmt)
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name, 0), sp_fmt)
+
+                # Freeze columns A through H (up to Organization Name)
+                worksheet.freeze_panes(1, 8)
 
             st.success("Report Generated!")
             clean_name = "".join(x for x in target_program if x.isalnum() or x in " -_")
