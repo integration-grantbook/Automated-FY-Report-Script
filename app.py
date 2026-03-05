@@ -200,6 +200,7 @@ with tab2:
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
                 # FORMATS
+                text_fmt = workbook.add_format({'border': 1})
                 header_fmt = workbook.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
                 money_fmt = workbook.add_format({'num_format': '$#,##0.00', 'border': 1})
                 total_col_fmt = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'num_format': '$#,##0.00', 'border': 1})
@@ -246,7 +247,7 @@ with tab2:
 
                 # Autofit and Headers
                 for col_num, col_name in enumerate(all_cols):
-                    worksheet.write(0, col_num, col_name, header_fmt)
+                    worksheet.write(0, col_num, "" if col_name in ['DIV1', 'DIV2'] else col_name, header_fmt)
                     if col_name in ['DIV1', 'DIV2']:
                         worksheet.set_column(col_num, col_num, 2, divider_fmt)
                     else:
@@ -259,6 +260,11 @@ with tab2:
                     e_row, r_type = r_idx + 1, r_data.get('Row_Type')
                     
                     if r_type == 'Data':
+                        # Text cells for info and grant columns
+                        text_cell_cols = info_cols + grant_cols
+                        for c_name in text_cell_cols:
+                            col_idx = all_cols.index(c_name)
+                            worksheet.write(e_row, col_idx, r_data.get(c_name, ""), text_fmt)
                         # Currency for standard data rows
                         worksheet.write(e_row, 3, r_data.get(budget_col, 0), money_fmt)
                         for i, c_name in enumerate(all_time_cols):
