@@ -254,4 +254,32 @@ with tab2:
                 report_df[all_cols].to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
                 worksheet = writer.sheets[sheet_name]
 
-                for col_num, val in enumerate
+                for col_num, val in enumerate(all_cols):
+                    if val in ['DIV1', 'DIV2']: worksheet.set_column(col_num, col_num, 1)
+                    else: 
+                        worksheet.write(0, col_num, val, header_fmt)
+                        worksheet.set_column(col_num, col_num, 15)
+
+                for r_idx, r_data in enumerate(final_rows):
+                    e_row, r_type = r_idx + 1, r_data.get('Row_Type')
+                    if r_type == 'FS_Subtotal':
+                        worksheet.set_row(e_row, None, subtotal_txt_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col), subtotal_num_fmt)
+                        for i, c_name in enumerate(all_time_cols):
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), subtotal_num_fmt)
+                    elif r_type == 'SP_Total':
+                        worksheet.set_row(e_row, None, sub_prog_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col), sub_prog_fmt)
+                        for i, c_name in enumerate(all_time_cols):
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), sub_prog_fmt)
+
+            st.success("Report Generated!")
+            # Appending file name with program selected
+            clean_name = "".join(x for x in target_program if x.isalnum() or x in " -_")
+            st.download_button(
+                label="📥 Download Excel Report", 
+                data=output.getvalue(), 
+                file_name=f"Fluxx_Report_FY{target_fy}_{clean_name}.xlsx"
+            )
+        except Exception as e:
+            st.error(f"Error: {e}")
