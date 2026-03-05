@@ -23,7 +23,7 @@ with st.sidebar:
     client_secret = st.text_input("Client Secret", type="password")
     
     st.divider()
-    st.caption("Standardized Reporting Engine v6.0")
+    st.caption("Standardized Reporting Engine v7.0")
 
 # --- UTILITY FUNCTIONS ---
 
@@ -91,46 +91,36 @@ tab1, tab2 = st.tabs(["🚀 Step 1: Sync Data", "📄 Step 2: Generate Report"])
 
 with tab1:
     st.header("Data Synchronization")
-    st.write("Click 'Sync All Tables' to refresh the local cache with fresh data from Fluxx.")
-    
     if st.button("Sync All Tables"):
         if not client_id or not client_secret:
             st.error("Please provide API credentials in the sidebar.")
         else:
             headers = get_auth_header()
             if headers:
-                with st.status("Fetching live data from Fluxx...", expanded=True) as status:
+                with st.status("Fetching live data...", expanded=True) as status:
                     get_all_records('program', ['id', 'name'], headers).to_csv('raw_program.csv', index=False)
                     get_all_records('sub_program', ['id', 'name'], headers).to_csv('raw_sub_program.csv', index=False)
                     get_all_records('funding_source', ['id', 'name', 'start_at', 'end_at'], headers).to_csv('raw_funding_source.csv', index=False)
                     get_all_records('funding_source_allocation', ['id', 'program_id', 'sub_program_id', 'funding_source_id', 'amount', 'spending_year'], headers).to_csv('raw_fsa.csv', index=False)
-                    
                     df_gr = get_all_records('grant_request', ['id', 'base_request_id', 'project_title', 'grant_agreement_at', 'program_organization_id'], headers, relations={"program_organization_id": ["name"]})
                     df_gr.to_csv('raw_grant_requests.csv', index=False)
-
                     get_all_records('request_funding_source', ['id', 'request_id', 'funding_source_allocation_id', 'funding_amount'], headers).to_csv('raw_split_rfs.csv', index=False)
                     get_all_records('request_transaction', ['id', 'request_id', 'due_at'], headers).to_csv('raw_payments_header.csv', index=False)
                     get_all_records('request_transaction_funding_source', ['id', 'request_transaction_id', 'request_funding_source_id', 'amount'], headers).to_csv('raw_payment_splits.csv', index=False)
-                    
                     status.update(label="Sync Successful!", state="complete")
-                st.success("The local cache is now up to date.")
+                st.success("Data cache updated.")
 
 with tab2:
     st.header("Report Configuration")
-    
     program_list = []
     try:
         temp_prog = pd.read_csv('raw_program.csv')
-        # Only include specific programs found in the data
         program_list = sorted(temp_prog['name'].unique().tolist())
-    except: 
-        st.warning("Please run Step 1 to populate program list.")
+    except: pass
 
     col_a, col_b = st.columns(2)
-    with col_a:
-        target_fy = st.number_input("Target Fiscal Year", value=2025)
-    with col_b:
-        target_program = st.selectbox("Filter by Program", options=program_list)
+    with col_a: target_fy = st.number_input("Target Fiscal Year", value=2025)
+    with col_b: target_program = st.selectbox("Filter by Program", options=program_list)
 
     if st.button("Generate Excel Report") and target_program:
         try:
@@ -163,7 +153,6 @@ with tab2:
 
             budget_col = f'Awards Budget Total FY{fy_short}'
             df_fsa = df_fsa.rename(columns={'amount': budget_col, 'id': 'FSA_ID'})
-            
             df_split_rfs = df_split_rfs.rename(columns={'id': 'RFS_ID_Key'})
             df_gr = df_gr.rename(columns={'id': 'Request_ID', 'base_request_id': 'Request ID'})
             master = df_split_rfs.merge(df_gr, left_on='request_id', right_on='Request_ID', how='left')
@@ -174,7 +163,7 @@ with tab2:
             df_pay_head['due_at'] = pd.to_datetime(df_pay_head['due_at'], errors='coerce').dt.tz_localize(None)
             df_pay_full = df_pay_split.merge(df_pay_head, left_on='request_transaction_id', right_on='id', how='left')
 
-            # Initialize Totals
+            # Time Columns
             master[f'Awards Total FY{fy_short}'] = 0.0
             master[f'Payments Total FY{fy_short}'] = 0.0
             for q in [1, 2, 3, 4]:
@@ -189,22 +178,14 @@ with tab2:
                 master[c_aw] = np.where(master['grant_agreement_at'].dt.to_period('M') == period, master['funding_amount'], 0.0)
                 pays = df_pay_full[df_pay_full['due_at'].dt.to_period('M') == period].groupby('request_funding_source_id')['amount'].sum()
                 master[c_pa] = master['RFS_ID_Key'].map(pays).fillna(0.0)
-                all_time_cols.append(c_aw)
-                all_time_cols.append(c_pa)
-                
-                # Add to Quarter and Year totals
+                all_time_cols.extend([c_aw, c_pa])
                 master[f'Q{q} FY{fy_short} Awards Total'] += master[c_aw]
                 master[f'Q{q} FY{fy_short} Payments Total'] += master[c_pa]
                 master[f'Awards Total FY{fy_short}'] += master[c_aw]
                 master[f'Payments Total FY{fy_short}'] += master[c_pa]
-                
                 if m_num in [9, 12, 3, 6]:
-                    all_time_cols.append(f'Q{q} FY{fy_short} Awards Total')
-                    all_time_cols.append(f'Q{q} FY{fy_short} Payments Total')
-
-            # Append Year Totals at the end of the time series
-            all_time_cols.append(f'Awards Total FY{fy_short}')
-            all_time_cols.append(f'Payments Total FY{fy_short}')
+                    all_time_cols.extend([f'Q{q} FY{fy_short} Awards Total', f'Q{q} FY{fy_short} Payments Total'])
+            all_time_cols.extend([f'Awards Total FY{fy_short}', f'Payments Total FY{fy_short}'])
 
             # 3. EXCEL CONSTRUCTION
             output = io.BytesIO()
@@ -212,11 +193,14 @@ with tab2:
             
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
-                header_fmt = workbook.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
-                subtotal_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'num_format': '$#,##0.00'})
-                subtotal_txt_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3'})
-                sub_prog_fmt = workbook.add_format({'bold': True, 'bg_color': '#ACB9CA', 'num_format': '$#,##0.00'})
-                money_fmt = workbook.add_format({'num_format': '$#,##0.00'})
+                # FORMATS
+                header_fmt = workbook.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+                money_fmt = workbook.add_format({'num_format': '$#,##0.00', 'border': 1})
+                total_col_fmt = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'num_format': '$#,##0.00', 'border': 1})
+                subtotal_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'num_format': '$#,##0.00', 'border': 1})
+                subtotal_txt_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'border': 1})
+                sp_fmt = workbook.add_format({'bold': True, 'bg_color': '#ACB9CA', 'num_format': '$#,##0.00', 'border': 1})
+                divider_fmt = workbook.add_format({'bg_color': '#808080'}) # Gray Divider
 
                 sheet_name = str(target_program)[:31].replace('/', '-')
                 final_rows = []
@@ -254,32 +238,41 @@ with tab2:
                 report_df[all_cols].to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
                 worksheet = writer.sheets[sheet_name]
 
-                for col_num, val in enumerate(all_cols):
-                    if val in ['DIV1', 'DIV2']: worksheet.set_column(col_num, col_num, 1)
-                    else: 
-                        worksheet.write(0, col_num, val, header_fmt)
-                        worksheet.set_column(col_num, col_num, 15)
+                # Autofit and Headers
+                for col_num, col_name in enumerate(all_cols):
+                    worksheet.write(0, col_num, col_name, header_fmt)
+                    if col_name in ['DIV1', 'DIV2']:
+                        worksheet.set_column(col_num, col_num, 2, divider_fmt)
+                    else:
+                        # Logic to calculate column width based on max content length
+                        max_len = max(report_df[col_name].astype(str).map(len).max(), len(col_name)) + 2
+                        worksheet.set_column(col_num, col_num, min(max_len, 50))
 
+                # Row and Cell Level Formatting
                 for r_idx, r_data in enumerate(final_rows):
                     e_row, r_type = r_idx + 1, r_data.get('Row_Type')
-                    if r_type == 'FS_Subtotal':
+                    
+                    # Apply money format to standard data rows
+                    if r_type == 'Data':
+                        worksheet.write(e_row, 3, r_data.get(budget_col), money_fmt) # Budget
+                        for i, c_name in enumerate(all_time_cols):
+                            col_idx = len(info_cols) + 1 + len(grant_cols) + 1 + i
+                            fmt = total_col_fmt if "Total" in c_name else money_fmt
+                            worksheet.write(e_row, col_idx, r_data.get(c_name), fmt)
+
+                    elif r_type == 'FS_Subtotal':
                         worksheet.set_row(e_row, None, subtotal_txt_fmt)
                         worksheet.write(e_row, 3, r_data.get(budget_col), subtotal_num_fmt)
                         for i, c_name in enumerate(all_time_cols):
                             worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), subtotal_num_fmt)
+                            
                     elif r_type == 'SP_Total':
-                        worksheet.set_row(e_row, None, sub_prog_fmt)
-                        worksheet.write(e_row, 3, r_data.get(budget_col), sub_prog_fmt)
+                        worksheet.set_row(e_row, None, sp_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col), sp_fmt)
                         for i, c_name in enumerate(all_time_cols):
-                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), sub_prog_fmt)
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), sp_fmt)
 
             st.success("Report Generated!")
-            # Appending file name with program selected
             clean_name = "".join(x for x in target_program if x.isalnum() or x in " -_")
-            st.download_button(
-                label="📥 Download Excel Report", 
-                data=output.getvalue(), 
-                file_name=f"Fluxx_Report_FY{target_fy}_{clean_name}.xlsx"
-            )
-        except Exception as e:
-            st.error(f"Error: {e}")
+            st.download_button(label="📥 Download Excel Report", data=output.getvalue(), file_name=f"Fluxx_Report_FY{target_fy}_{clean_name}.xlsx")
+        except Exception as e: st.error(f"Error: {e}")
