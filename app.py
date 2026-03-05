@@ -260,13 +260,16 @@ with tab2:
                     e_row, r_type = r_idx + 1, r_data.get('Row_Type')
                     
                     if r_type == 'Data':
-                        # Text cells for info and grant columns
-                        text_cell_cols = info_cols + grant_cols
+                        # Text cells for info and grant columns (exclude budget_col, handled separately)
+                        text_cell_cols = [c for c in info_cols + grant_cols if c != budget_col]
                         for c_name in text_cell_cols:
                             col_idx = all_cols.index(c_name)
                             worksheet.write(e_row, col_idx, r_data.get(c_name, ""), text_fmt)
                         # Currency for standard data rows
-                        worksheet.write(e_row, 3, r_data.get(budget_col, 0), money_fmt)
+                        budget_val = r_data.get(budget_col, 0)
+                        if not isinstance(budget_val, str) and (budget_val != budget_val or budget_val == float('inf') or budget_val == float('-inf')):
+                            budget_val = 0
+                        worksheet.write(e_row, 3, budget_val, money_fmt)
                         for i, c_name in enumerate(all_time_cols):
                             col_idx = len(info_cols) + 1 + len(grant_cols) + 1 + i
                             fmt = total_col_fmt if "Total" in c_name else money_fmt
