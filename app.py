@@ -23,7 +23,7 @@ with st.sidebar:
     client_secret = st.text_input("Client Secret", type="password")
     
     st.divider()
-    st.caption("Standardized Reporting Engine v4.0")
+    st.caption("Standardized Reporting Engine v5.0")
 
 # --- UTILITY FUNCTIONS ---
 
@@ -102,7 +102,6 @@ with tab1:
             headers = get_auth_header()
             if headers:
                 with st.status("Fetching live data from Fluxx...", expanded=True) as status:
-                    # Logic: Pulling all required tables automatically
                     get_all_records('program', ['id', 'name'], headers).to_csv('raw_program.csv', index=False)
                     get_all_records('sub_program', ['id', 'name'], headers).to_csv('raw_sub_program.csv', index=False)
                     get_all_records('funding_source', ['id', 'name', 'start_at', 'end_at'], headers).to_csv('raw_funding_source.csv', index=False)
@@ -121,7 +120,6 @@ with tab1:
 with tab2:
     st.header("Report Configuration")
     
-    # Dynamically build program list
     program_list = ["Run Step 1 First"]
     try:
         temp_prog = pd.read_csv('raw_program.csv')
@@ -130,13 +128,13 @@ with tab2:
 
     col_a, col_b = st.columns(2)
     with col_a:
-        target_fy = st.number_input("Target Fiscal Year", value=2025, help="Filter results based on Funding Source Allocation year.")
+        target_fy = st.number_input("Target Fiscal Year", value=2025)
     with col_b:
-        target_program = st.selectbox("Filter by Program", options=program_list, help="Select the program you wish to generate a detailed report for.")
+        target_program = st.selectbox("Filter by Program", options=program_list)
 
     if st.button("Generate Excel Report"):
         try:
-            # 1. LOAD CACHED DATA
+            # 1. LOAD DATA
             df_prog = clean_data_types(pd.read_csv('raw_program.csv'))
             df_sub = clean_data_types(pd.read_csv('raw_sub_program.csv'))
             df_fund = clean_data_types(pd.read_csv('raw_funding_source.csv'))
@@ -146,7 +144,6 @@ with tab2:
             df_pay_head = clean_data_types(pd.read_csv('raw_payments_header.csv'))
             df_pay_split = clean_data_types(pd.read_csv('raw_payment_splits.csv'))
 
-            # Parse Org Names & Dates
             df_gr['Grantee'] = df_gr['program_organization_id'].apply(extract_org_name)
             df_gr = clean_data_types(df_gr)
             fy_short = str(target_fy)[-2:]
@@ -154,7 +151,7 @@ with tab2:
             fy_end = pd.to_datetime(f"{target_fy}-06-30")
             months = pd.period_range(start=fy_start, end=fy_end, freq='M')
 
-            # 2. CORE REPORT LOGIC (Subtotal Grouping)
+            # 2. JOIN LOGIC
             df_prog = df_prog.rename(columns={'id': 'p_id', 'name': 'Program'})
             df_sub = df_sub.rename(columns={'id': 'sp_id', 'name': 'Sub Focus Area'})
             df_fund = df_fund.rename(columns={'id': 'fs_id', 'name': 'Funding Source'})
@@ -173,101 +170,99 @@ with tab2:
             master = master.merge(df_fsa, left_on='funding_source_allocation_id', right_on='FSA_ID', how='right')
             master = master.rename(columns={'Grantee': 'Organization Name', 'project_title': 'Project Title'})
 
-            # Financial Slotting
             master['grant_agreement_at'] = pd.to_datetime(master['grant_agreement_at'], errors='coerce').dt.tz_localize(None)
             df_pay_head['due_at'] = pd.to_datetime(df_pay_head['due_at'], errors='coerce').dt.tz_localize(None)
             df_pay_full = df_pay_split.merge(df_pay_head, left_on='request_transaction_id', right_on='id', how='left')
 
             for q in [1, 2, 3, 4]:
-                master[f'Q{q} FY{fy_short} Awards'] = 0.0
-                master[f'Q{q} FY{fy_short} Payments'] = 0.0
+                master[f'Q{q} FY{fy_short} Awards Total'] = 0.0
+                master[f'Q{q} FY{fy_short} Payments Total'] = 0.0
 
             all_time_cols = []
             for period in months:
                 lbl, m_num = period.strftime('%b-%y'), period.month
                 q = 1 if m_num in [7,8,9] else 2 if m_num in [10,11,12] else 3 if m_num in [1,2,3] else 4
-                
                 c_aw, c_pa = f'{lbl} Awards', f'{lbl} Payments'
                 master[c_aw] = np.where(master['grant_agreement_at'].dt.to_period('M') == period, master['funding_amount'], 0.0)
                 pays = df_pay_full[df_pay_full['due_at'].dt.to_period('M') == period].groupby('request_funding_source_id')['amount'].sum()
                 master[c_pa] = master['RFS_ID_Key'].map(pays).fillna(0.0)
-                
-                all_time_cols.extend([c_aw, c_pa])
-                master[f'Q{q} FY{fy_short} Awards'] += master[c_aw]
-                master[f'Q{q} FY{fy_short} Payments'] += master[c_pa]
-
+                all_time_cols.append(c_aw)
+                all_time_cols.append(c_pa)
+                master[f'Q{q} FY{fy_short} Awards Total'] += master[c_aw]
+                master[f'Q{q} FY{fy_short} Payments Total'] += master[c_pa]
                 if m_num in [9, 12, 3, 6]:
-                    all_time_cols.extend([f'Q{q} FY{fy_short} Awards', f'Q{q} FY{fy_short} Payments'])
+                    all_time_cols.append(f'Q{q} FY{fy_short} Awards Total')
+                    all_time_cols.append(f'Q{q} FY{fy_short} Payments Total')
 
-            # 3. CONSTRUCT EXCEL (RE-INTATED COMPLEX GROUPING)
+            # 3. EXCEL CONSTRUCTION (Original Subtotal Formatting)
             output = io.BytesIO()
             if target_program in master['Program'].values: master = master[master['Program'] == target_program]
             
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
-                # Formatting (Matching your functional version)
-                header_fmt = workbook.add_format({'bold': True, 'bg_color': '#1F4E78', 'font_color': 'white', 'border': 1, 'align': 'center'})
-                subtotal_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'num_format': '$#,##0.00', 'border': 1})
-                sp_total_fmt = workbook.add_format({'bold': True, 'bg_color': '#ACB9CA', 'num_format': '$#,##0.00', 'border': 1})
+                # EXACT STYLES FROM ORIGINAL VERSION
+                header_fmt = workbook.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
+                subtotal_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'num_format': '$#,##0.00'})
+                subtotal_txt_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3'})
+                sub_prog_fmt = workbook.add_format({'bold': True, 'bg_color': '#ACB9CA', 'num_format': '$#,##0.00'})
                 money_fmt = workbook.add_format({'num_format': '$#,##0.00'})
 
                 sheet_name = str(target_program)[:31].replace('/', '-')
                 final_rows = []
-                info_cols = ['Sub Focus Area', 'Funding Source', budget_col]
+                info_cols = ['Program', 'Sub Focus Area', 'Funding Source', budget_col]
                 grant_cols = ['Organization Name', 'Request ID', 'Project Title']
-                all_cols = info_cols + grant_cols + all_time_cols
+                all_cols = info_cols + ['DIV1'] + grant_cols + ['DIV2'] + all_time_cols
 
                 for sub_prog, sub_group in master.groupby('Sub Focus Area'):
                     sub_totals = {c: 0.0 for c in all_time_cols + [budget_col]}
                     for fs_name, fs_group in sub_group.groupby('Funding Source'):
                         fs_totals = fs_group[all_time_cols].sum()
                         fs_budget = fs_group[budget_col].max()
-                        
                         first_row = True
                         for _, row in fs_group.iterrows():
                             rd = row.to_dict()
+                            rd.update({'DIV1': "", 'DIV2': ""})
                             if not first_row: 
                                 for c in info_cols: rd[c] = ""
                             rd['Row_Type'] = 'Data'
                             final_rows.append(rd)
                             first_row = False
                         
-                        # Funding Source Subtotal
                         fs_sum_row = fs_totals.to_dict()
-                        fs_sum_row.update({'Sub Focus Area': "", 'Funding Source': f"TOTAL: {fs_name}", budget_col: fs_budget, 'Row_Type': 'FS_Subtotal'})
+                        fs_sum_row.update({'DIV1': "", 'DIV2': "", 'Program': "", 'Sub Focus Area': "", 'Funding Source': f"TOTAL: {fs_name}", budget_col: fs_budget, 'Row_Type': 'FS_Subtotal'})
                         final_rows.append(fs_sum_row)
                         sub_totals[budget_col] += fs_budget
                         for c in all_time_cols: sub_totals[c] += fs_totals[c]
 
-                    # Sub Focus Area Total
                     sp_sum_row = sub_totals.copy()
-                    sp_sum_row.update({'Sub Focus Area': f"TOTAL: {sub_prog}", 'Funding Source': "", 'Row_Type': 'SP_Total'})
+                    sp_sum_row.update({'DIV1': "", 'DIV2': "", 'Program': "", 'Sub Focus Area': f"TOTAL: {sub_prog.upper()}", 'Funding Source': "", 'Row_Type': 'SP_Total'})
                     final_rows.append(sp_sum_row)
-                    final_rows.append({c: "" for c in all_cols}) # Spacer
+                    final_rows.append({c: "" for c in all_cols})
 
                 report_df = pd.DataFrame(final_rows)
                 report_df[all_cols].to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
                 worksheet = writer.sheets[sheet_name]
 
-                # Headers
                 for col_num, val in enumerate(all_cols):
-                    worksheet.write(0, col_num, val, header_fmt)
-                    worksheet.set_column(col_num, col_num, 18)
+                    if val in ['DIV1', 'DIV2']: worksheet.set_column(col_num, col_num, 1)
+                    else: 
+                        worksheet.write(0, col_num, val, header_fmt)
+                        worksheet.set_column(col_num, col_num, 15)
 
-                # Row-based styling for subtotals
                 for r_idx, r_data in enumerate(final_rows):
-                    e_row = r_idx + 1
-                    r_type = r_data.get('Row_Type')
-                    if r_type in ['FS_Subtotal', 'SP_Total']:
-                        fmt = subtotal_fmt if r_type == 'FS_Subtotal' else sp_total_fmt
-                        worksheet.set_row(e_row, None, fmt)
-                        # Re-write the budget and all values in the subtotal format
-                        worksheet.write(e_row, 2, r_data.get(budget_col), fmt)
+                    e_row, r_type = r_idx + 1, r_data.get('Row_Type')
+                    if r_type == 'FS_Subtotal':
+                        worksheet.set_row(e_row, None, subtotal_txt_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col), subtotal_num_fmt)
                         for i, c_name in enumerate(all_time_cols):
-                            worksheet.write(e_row, len(info_cols) + len(grant_cols) + i, r_data.get(c_name), fmt)
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), subtotal_num_fmt)
+                    elif r_type == 'SP_Total':
+                        worksheet.set_row(e_row, None, sub_prog_fmt)
+                        worksheet.write(e_row, 3, r_data.get(budget_col), sub_prog_fmt)
+                        for i, c_name in enumerate(all_time_cols):
+                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), sub_prog_fmt)
 
             st.success("Report Generated!")
             st.download_button(label="📥 Download Excel Report", data=output.getvalue(), file_name=f"Fluxx_Report_FY{target_fy}.xlsx")
-
         except Exception as e:
             st.error(f"Error: {e}")
