@@ -197,7 +197,7 @@ with tab2:
             master[all_time_cols] = master[all_time_cols].fillna(0.0)
             master[budget_col] = master[budget_col].fillna(0.0)
 
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            with pd.ExcelWriter(output, engine='xlsxwriter', engine_kwargs={'options': {'nan_inf_to_errors': True}}) as writer:
                 workbook = writer.book
                 # FORMATS
                 text_fmt = workbook.add_format({'border': 1})
