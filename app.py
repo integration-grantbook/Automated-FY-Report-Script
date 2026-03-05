@@ -23,12 +23,11 @@ with st.sidebar:
     client_secret = st.text_input("Client Secret", type="password")
     
     st.divider()
-    st.caption("Standardized Reporting Engine v5.0")
+    st.caption("Standardized Reporting Engine v6.0")
 
 # --- UTILITY FUNCTIONS ---
 
 def get_auth_header():
-    """Generates the OAuth2 Bearer token for Fluxx API access."""
     try:
         url = f"{client_site.rstrip('/')}/oauth/token"
         data = {'grant_type': 'client_credentials', 'client_id': client_id, 'client_secret': client_secret}
@@ -42,7 +41,6 @@ def get_auth_header():
         return None
 
 def get_all_records(model, cols, headers, relations=None):
-    """Paginates through the Fluxx API to download all records for a specific model."""
     all_recs = []
     page = 1
     base_url = client_site.rstrip('/') + '/api/rest/v2'
@@ -120,11 +118,13 @@ with tab1:
 with tab2:
     st.header("Report Configuration")
     
-    program_list = ["Run Step 1 First"]
+    program_list = []
     try:
         temp_prog = pd.read_csv('raw_program.csv')
+        # Only include specific programs found in the data
         program_list = sorted(temp_prog['name'].unique().tolist())
-    except: pass
+    except: 
+        st.warning("Please run Step 1 to populate program list.")
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -132,7 +132,7 @@ with tab2:
     with col_b:
         target_program = st.selectbox("Filter by Program", options=program_list)
 
-    if st.button("Generate Excel Report"):
+    if st.button("Generate Excel Report") and target_program:
         try:
             # 1. LOAD DATA
             df_prog = clean_data_types(pd.read_csv('raw_program.csv'))
@@ -174,6 +174,9 @@ with tab2:
             df_pay_head['due_at'] = pd.to_datetime(df_pay_head['due_at'], errors='coerce').dt.tz_localize(None)
             df_pay_full = df_pay_split.merge(df_pay_head, left_on='request_transaction_id', right_on='id', how='left')
 
+            # Initialize Totals
+            master[f'Awards Total FY{fy_short}'] = 0.0
+            master[f'Payments Total FY{fy_short}'] = 0.0
             for q in [1, 2, 3, 4]:
                 master[f'Q{q} FY{fy_short} Awards Total'] = 0.0
                 master[f'Q{q} FY{fy_short} Payments Total'] = 0.0
@@ -188,19 +191,27 @@ with tab2:
                 master[c_pa] = master['RFS_ID_Key'].map(pays).fillna(0.0)
                 all_time_cols.append(c_aw)
                 all_time_cols.append(c_pa)
+                
+                # Add to Quarter and Year totals
                 master[f'Q{q} FY{fy_short} Awards Total'] += master[c_aw]
                 master[f'Q{q} FY{fy_short} Payments Total'] += master[c_pa]
+                master[f'Awards Total FY{fy_short}'] += master[c_aw]
+                master[f'Payments Total FY{fy_short}'] += master[c_pa]
+                
                 if m_num in [9, 12, 3, 6]:
                     all_time_cols.append(f'Q{q} FY{fy_short} Awards Total')
                     all_time_cols.append(f'Q{q} FY{fy_short} Payments Total')
 
-            # 3. EXCEL CONSTRUCTION (Original Subtotal Formatting)
+            # Append Year Totals at the end of the time series
+            all_time_cols.append(f'Awards Total FY{fy_short}')
+            all_time_cols.append(f'Payments Total FY{fy_short}')
+
+            # 3. EXCEL CONSTRUCTION
             output = io.BytesIO()
-            if target_program in master['Program'].values: master = master[master['Program'] == target_program]
+            master = master[master['Program'] == target_program]
             
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 workbook = writer.book
-                # EXACT STYLES FROM ORIGINAL VERSION
                 header_fmt = workbook.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': 'white', 'border': 1, 'align': 'center', 'valign': 'vcenter', 'text_wrap': True})
                 subtotal_num_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3', 'num_format': '$#,##0.00'})
                 subtotal_txt_fmt = workbook.add_format({'bold': True, 'bg_color': '#D3D3D3'})
@@ -243,26 +254,4 @@ with tab2:
                 report_df[all_cols].to_excel(writer, sheet_name=sheet_name, index=False, startrow=1, header=False)
                 worksheet = writer.sheets[sheet_name]
 
-                for col_num, val in enumerate(all_cols):
-                    if val in ['DIV1', 'DIV2']: worksheet.set_column(col_num, col_num, 1)
-                    else: 
-                        worksheet.write(0, col_num, val, header_fmt)
-                        worksheet.set_column(col_num, col_num, 15)
-
-                for r_idx, r_data in enumerate(final_rows):
-                    e_row, r_type = r_idx + 1, r_data.get('Row_Type')
-                    if r_type == 'FS_Subtotal':
-                        worksheet.set_row(e_row, None, subtotal_txt_fmt)
-                        worksheet.write(e_row, 3, r_data.get(budget_col), subtotal_num_fmt)
-                        for i, c_name in enumerate(all_time_cols):
-                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), subtotal_num_fmt)
-                    elif r_type == 'SP_Total':
-                        worksheet.set_row(e_row, None, sub_prog_fmt)
-                        worksheet.write(e_row, 3, r_data.get(budget_col), sub_prog_fmt)
-                        for i, c_name in enumerate(all_time_cols):
-                            worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name), sub_prog_fmt)
-
-            st.success("Report Generated!")
-            st.download_button(label="📥 Download Excel Report", data=output.getvalue(), file_name=f"Fluxx_Report_FY{target_fy}.xlsx")
-        except Exception as e:
-            st.error(f"Error: {e}")
+                for col_num, val in enumerate
