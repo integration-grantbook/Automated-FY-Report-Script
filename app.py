@@ -264,7 +264,13 @@ with tab2:
                         text_cell_cols = [c for c in info_cols + grant_cols if c != budget_col]
                         for c_name in text_cell_cols:
                             col_idx = all_cols.index(c_name)
-                            worksheet.write(e_row, col_idx, r_data.get(c_name, ""), text_fmt)
+                            val = r_data.get(c_name, "")
+                            if not isinstance(val, str) and (val != val or val == float('inf') or val == float('-inf')):
+                                val = ""
+                            worksheet.write(e_row, col_idx, val, text_fmt)
+                        # Divider cells
+                        worksheet.write(e_row, all_cols.index('DIV1'), "", divider_fmt)
+                        worksheet.write(e_row, all_cols.index('DIV2'), "", divider_fmt)
                         # Currency for standard data rows
                         budget_val = r_data.get(budget_col, 0)
                         if not isinstance(budget_val, str) and (budget_val != budget_val or budget_val == float('inf') or budget_val == float('-inf')):
@@ -277,15 +283,24 @@ with tab2:
 
                     elif r_type == 'FS_Subtotal':
                         worksheet.set_row(e_row, None, subtotal_txt_fmt)
+                        worksheet.write(e_row, all_cols.index('DIV1'), "", divider_fmt)
+                        worksheet.write(e_row, all_cols.index('DIV2'), "", divider_fmt)
                         worksheet.write(e_row, 3, r_data.get(budget_col, 0), subtotal_num_fmt)
                         for i, c_name in enumerate(all_time_cols):
                             worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name, 0), subtotal_num_fmt)
                             
                     elif r_type == 'SP_Total':
                         worksheet.set_row(e_row, None, sp_fmt)
+                        worksheet.write(e_row, all_cols.index('DIV1'), "", divider_fmt)
+                        worksheet.write(e_row, all_cols.index('DIV2'), "", divider_fmt)
                         worksheet.write(e_row, 3, r_data.get(budget_col, 0), sp_fmt)
                         for i, c_name in enumerate(all_time_cols):
                             worksheet.write(e_row, len(info_cols) + 1 + len(grant_cols) + 1 + i, r_data.get(c_name, 0), sp_fmt)
+
+                    else:
+                        # Spacer rows
+                        worksheet.write(e_row, all_cols.index('DIV1'), "", divider_fmt)
+                        worksheet.write(e_row, all_cols.index('DIV2'), "", divider_fmt)
 
                 # Freeze columns A through H (up to Organization Name)
                 worksheet.freeze_panes(1, 8)
